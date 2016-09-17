@@ -2,55 +2,62 @@ from enum import Enum
 from functools import wraps
 
 
-class ColumnNotFound(Exception):
-    def __init__(self, table, column):
+class AttributeNotFound(Exception):
+    def __init__(self, entity, attribute):
         self.message = '{}.{} not found: {}.\{{}\}' \
-            .format(table, column, table, ', '.join(table.columns))
+            .format(entity, attribute, entity, ', '.join(entity.attributes))
 
 
-class ColumnType(Enum):
+class AttributeType(Enum):
     INT = 1
     STRING = 2
     DECIMAL = 3
     TIMESTAMP = 4
 
 
-class Column:
-    def __init__(self, table, name, col_type):
-        self.table = table
+class Attribute:
+    def __init__(self, entity, name, attr_type, inputs=None):
+        self.entity = entity
         self.name = name
-        self.col_type = col_type
+        self.attr_type = attr_type
+        self.inputs = inputs or {}
 
     def __repr__(self):
-        return 'Column(Table({}), {}, {})' \
-            .format(self.table.name, self.name, self.col_type)
+        return 'Attribute(Entity({}), {}, {})' \
+            .format(self.entity.name, self.name, self.attr_type)
 
 
-class Table:
-    def __init__(self, name, columns):
+class Entity:
+    def __init__(self, name, attr_defs):
         self.name = name
-        self.columns = columns
+        self.attributes = {
+            name: Attribute(self, name, attr_type, inputs=inputs)
+            for (name, (inputs, attr_type)) in attr_defs.items()
+        }
 
     def __repr__(self):
-        column_names = [col_name for col_name in self.columns.keys()]
-        return 'Table({}, {})'.format(self.name, column_names)
+        attr_names = [attr_name for attr_name in self.attributes.keys()]
+        return 'Entity({}, {})'.format(self.name, attr_names)
 
 
-class Source(Table):
+class Source(Entity):
     def __init__(self, path):
         super().__init__(path, self._load_schema(path))
 
     def __getitem__(self, name):
-        if name not in self.columns:
-            raise ColumnNotFound(self, name)
-        return Column(self, name, self.columns[name])
+        if name not in self.attributes:
+            raise AttributeNotFound(self, name)
+        return self.attributes[name]
 
     @staticmethod
     def _load_schema(path):
-        return SCHEMAS[path]
+        return {
+            name: ([], attr_type)
+            for (name, attr_type) in SCHEMAS[path].items()
+        }
 
 
-class Entity(Table):
+class Derived(Entity):
     def __init__(self):
         name = self.__class__.__name__.lower()
         attributes = {}
@@ -58,20 +65,20 @@ class Entity(Table):
         for attr_name in dir(self):
             class_attr = getattr(self, attr_name)
             if hasattr(class_attr, '_output'):
-                attributes[attr_name] = class_attr._output
+                attributes[attr_name] = (class_attr._inputs, class_attr._output)
 
         super().__init__(name, attributes)
 
 
 class Join:
-    def __init__(self, table, col_name, entity_attribute='id'):
-        self.table = table
-        self.col_name = col_name
-        self.entity_attribute = entity_attribute
+    def __init__(self, entity, name, match_name='id'):
+        self.entity = entity
+        self.name = name
+        self.match_name = match_name
 
     def __repr__(self):
-        return 'Join({}, {}, {})' \
-            .format(self.table, self.col_name, self.entity_attribute)
+        return 'Join(Entity({}), {}, {})' \
+            .format(self.entity.name, self.name, self.match_name)
 
 
 def input(name, selector):
@@ -88,13 +95,13 @@ def input(name, selector):
     return input_decorator
 
 
-def output(col_type):
+def output(attr_type):
     def output_decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
             return fn(*args, **kwargs)
 
-        wrapper._output = col_type
+        wrapper._output = attr_type
         return wrapper
 
     return output_decorator
@@ -103,26 +110,26 @@ def output(col_type):
 
 SCHEMAS = {
     'data/raw/orders': {
-        'id': ColumnType.INT,
-        'shop_id': ColumnType.INT,
-        'customer_id': ColumnType.INT,
-        'completed_at': ColumnType.TIMESTAMP,
+        'id': AttributeType.INT,
+        'shop_id': AttributeType.INT,
+        'customer_id': AttributeType.INT,
+        'completed_at': AttributeType.TIMESTAMP,
     },
     'data/raw/transactions': {
-        'id': ColumnType.INT,
-        'order_id': ColumnType.INT,
-        'product_name': ColumnType.STRING,
-        'unit_cost': ColumnType.DECIMAL,
-        'quantity': ColumnType.INT,
+        'id': AttributeType.INT,
+        'order_id': AttributeType.INT,
+        'product_name': AttributeType.STRING,
+        'unit_cost': AttributeType.DECIMAL,
+        'quantity': AttributeType.INT,
     },
     'data/raw/customers': {
-        'id': ColumnType.INT,
-        'name': ColumnType.STRING,
+        'id': AttributeType.INT,
+        'name': AttributeType.STRING,
     },
     'data/raw/shops': {
-        'id': ColumnType.INT,
-        'name': ColumnType.STRING,
-        'country': ColumnType.STRING,
+        'id': AttributeType.INT,
+        'name': AttributeType.STRING,
+        'country': AttributeType.STRING,
     }
 }
 
@@ -132,60 +139,60 @@ raw_customers = Source('data/raw/customers')
 raw_shops = Source('data/raw/shops')
 
 
-class Shops(Entity):
+class Shops(Derived):
     SOURCES = {
         'shops': Join(raw_shops, 'id')
     }
 
     @input('name', 'customers.name')
-    @output(ColumnType.STRING)
+    @output(AttributeType.STRING)
     def name(name):
         return name
 
     @input('country', 'shops.country')
-    @output(ColumnType.STRING)
+    @output(AttributeType.STRING)
     def country_name(country):
         return country.lower()
 
     @input('country', 'shops.country')
-    @output(ColumnType.STRING)
+    @output(AttributeType.STRING)
     def country_code(country):
         codes = {'united states': 'US',
                  'canada': 'CA'}
         return codes.get(country.lower())
 
 
-class Customers(Entity):
+class Customers(Derived):
     SOURCES = {
         'customers': Join(raw_customers, 'id')
     }
 
     @input('name', 'customers.name')
-    @output(ColumnType.STRING)
+    @output(AttributeType.STRING)
     def name(name):
         return name
 
 
-class Sales(Entity):
+class Sales(Derived):
     SOURCES = {
         'orders': Join(raw_orders, 'id'),
         'transactions': Join(raw_transactions, 'order_id'),
-        'shops': Join(raw_shops, 'id', entity_attribute='shop_id'),
-        'customers': Join(raw_customers, 'id', entity_attribute='customer_id')
+        'shops': Join(raw_shops, 'id', match_name='shop_id'),
+        'customers': Join(raw_customers, 'id', match_name='customer_id')
     }
 
     @input('id', 'orders.shop_id')
-    @output(ColumnType.INT)
+    @output(AttributeType.INT)
     def shop_id(id):
         return id
 
     @input('id', 'orders.customer_id')
-    @output(ColumnType.INT)
+    @output(AttributeType.INT)
     def customer_id(id):
         return id
 
     @input('name', 'shops.name')
-    @output(ColumnType.STRING)
+    @output(AttributeType.STRING)
     def shop_name(name):
         return name
 
@@ -207,25 +214,45 @@ class Graph:
     def add_node(self, key, val):
         self.nodes[key] = val
 
-    def add_edge(self, from_key, to_key, join):
-        assert from_key in self.nodes
-        assert to_key in self.nodes
-        self.edges[from_key] = (to_key, join)
+    def add_edge(self, from_key, to_key, meta=None):
+        if from_key not in self.edges:
+            self.edges[from_key] = []
+        self.edges[from_key].append((to_key, meta))
+
+    def dot(self):
+        output = []
+        output.append("digraph eavt {")
+        for (from_key, tos) in self.edges.items():
+            for (to_key, _) in tos:
+                output.append("    \"{}\" -> \"{}\"".format(from_key, to_key))
+        output.append("}")
+        return '\n'.join(output)
 
 
-def build_graph(sources, entities):
+def build_entity_graph(sources, entities):
     graph = Graph()
 
     for source in sources:
         graph.add_node(source.name, source)
-    for entity in entities:
-        graph.add_node(entity.name, entity)
 
     for entity in entities:
+        graph.add_node(entity.name, entity)
         for join in entity.SOURCES.values():
-            graph.add_edge(join.table.name, entity.name, join)
+            graph.add_edge(join.entity.name, entity.name, join)
 
     return graph
 
 
-graph = build_graph(SOURCES, ENTITIES)
+def build_attribute_graph(entity_graph):
+    attr_graph = Graph()
+
+    for entity in entity_graph.nodes.values():
+        for attribute in entity.attributes.values():
+            attr_graph.add_node(attribute.name, attribute)
+            for inp in attribute.inputs.values():
+                attr_graph.add_edge(inp, attribute.name)
+
+    return attr_graph
+
+entity_graph = build_entity_graph(SOURCES, ENTITIES)
+attr_graph = build_attribute_graph(entity_graph)
