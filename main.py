@@ -32,7 +32,7 @@ class Entity:
         self.name = name
         self.attributes = {
             name: Attribute(self, name, attr_type, inputs=inputs)
-            for (name, (inputs, attr_type)) in attr_defs.items()
+            for name, (inputs, attr_type) in attr_defs.items()
         }
 
     def __repr__(self):
@@ -144,7 +144,12 @@ class Shops(Derived):
         'shops': Join(raw_shops, 'id')
     }
 
-    @input('name', 'customers.name')
+    @input('id', 'shops.id')
+    @output(AttributeType.INT)
+    def id(id):
+        return id
+
+    @input('name', 'shops.name')
     @output(AttributeType.STRING)
     def name(name):
         return name
@@ -167,6 +172,11 @@ class Customers(Derived):
         'customers': Join(raw_customers, 'id')
     }
 
+    @input('id', 'customers.id')
+    @output(AttributeType.INT)
+    def id(id):
+        return id
+
     @input('name', 'customers.name')
     @output(AttributeType.STRING)
     def name(name):
@@ -177,8 +187,8 @@ class Sales(Derived):
     SOURCES = {
         'orders': Join(raw_orders, 'id'),
         'transactions': Join(raw_transactions, 'order_id'),
-        'shops': Join(raw_shops, 'id', match_name='shop_id'),
-        'customers': Join(raw_customers, 'id', match_name='customer_id')
+        'shops': Join(Shops(), 'id', match_name='shop_id'),
+        'customers': Join(Customers(), 'id', match_name='customer_id')
     }
 
     @input('id', 'orders.shop_id')
@@ -195,6 +205,12 @@ class Sales(Derived):
     @output(AttributeType.STRING)
     def shop_name(name):
         return name
+
+    @input('shop_name', 'shops.name')
+    @input('customer_name', 'customers.name')
+    @output(AttributeType.STRING)
+    def shop_customer_name(shop_name, customer_name):
+        return '{}:{}'.format(shop_name, customer_name)
 
 shops = Shops()
 customers = Customers()
@@ -219,11 +235,17 @@ class Graph:
             self.edges[from_key] = []
         self.edges[from_key].append((to_key, meta))
 
+    def in_edges(self, node_key):
+        for from_key, outs in self.edges.items():
+            for to_key, meta in outs:
+                if to_key == node_key:
+                    yield (from_key, meta)
+
     def dot(self):
         output = []
         output.append("digraph eavt {")
-        for (from_key, tos) in self.edges.items():
-            for (to_key, _) in tos:
+        for from_key, outs in self.edges.items():
+            for to_key, _ in outs:
                 output.append("    \"{}\" -> \"{}\"".format(from_key, to_key))
         output.append("}")
         return '\n'.join(output)
@@ -237,10 +259,30 @@ def build_entity_graph(sources, entities):
 
     for entity in entities:
         graph.add_node(entity.name, entity)
-        for join in entity.SOURCES.values():
-            graph.add_edge(join.entity.name, entity.name, join)
+        for join_name, join in entity.SOURCES.items():
+            meta = {
+                'name': join_name,
+                'join': join,
+            }
+            graph.add_edge(join.entity.name, entity.name, meta)
 
     return graph
+
+
+def lookup_input_attribute(entity_graph, entity_name, attr_key):
+    input_alias, attr_name = attr_key.split('.')
+    sources = entity_graph.in_edges(entity_name)
+
+    input_joins = [
+        join_def['join']
+        for _, join_def in sources
+        if join_def['name'] == input_alias
+    ]
+    assert len(input_joins) == 1
+    input_entity = input_joins[0].entity
+
+    assert attr_name in input_entity.attributes
+    return '{}.{}'.format(input_entity.name, attr_name)
 
 
 def build_attribute_graph(entity_graph):
@@ -248,9 +290,12 @@ def build_attribute_graph(entity_graph):
 
     for entity in entity_graph.nodes.values():
         for attribute in entity.attributes.values():
-            attr_graph.add_node(attribute.name, attribute)
+            key = '{}.{}'.format(entity.name, attribute.name)
+            attr_graph.add_node(key, attribute)
+
             for inp in attribute.inputs.values():
-                attr_graph.add_edge(inp, attribute.name)
+                input_key = lookup_input_attribute(entity_graph, entity.name, inp)
+                attr_graph.add_edge(input_key, key)
 
     return attr_graph
 
