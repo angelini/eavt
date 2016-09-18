@@ -1,5 +1,8 @@
 from enum import Enum
 from functools import wraps
+import os
+import subprocess
+import tempfile
 
 
 class AttributeNotFound(Exception):
@@ -256,6 +259,15 @@ class Graph:
                 output.append("    \"{}\" -> \"{}\"".format(from_key, to_key))
         output.append("}")
         return '\n'.join(output)
+
+    def render(self):
+        tmp_fd, path = tempfile.mkstemp()
+        with os.fdopen(tmp_fd, mode='w') as tmp_file:
+            tmp_file.write(self.dot())
+
+        subprocess.check_call(['dot', '-T', 'png', '-O', path])
+        subprocess.check_call(['open', '{}.png'.format(path)])
+        os.remove(path)
 
 
 def build_entity_graph(sources, entities):
