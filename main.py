@@ -191,6 +191,11 @@ class Sales(Derived):
         'customers': Join(Customers(), 'id', match_name='customer_id')
     }
 
+    @input('id', 'orders.id')
+    @output(AttributeType.INT)
+    def id(id):
+        return id
+
     @input('id', 'orders.shop_id')
     @output(AttributeType.INT)
     def shop_id(id):
@@ -233,6 +238,8 @@ class Graph:
     def add_edge(self, from_key, to_key, meta=None):
         if from_key not in self.edges:
             self.edges[from_key] = []
+        if [True for (t, _) in self.edges[from_key] if to_key == t]:
+            return
         self.edges[from_key].append((to_key, meta))
 
     def in_edges(self, node_key):
@@ -269,7 +276,7 @@ def build_entity_graph(sources, entities):
     return graph
 
 
-def lookup_input_attribute(entity_graph, entity_name, attr_key):
+def lookup_input_keys(entity_graph, entity_name, attr_key):
     input_alias, attr_name = attr_key.split('.')
     sources = entity_graph.in_edges(entity_name)
 
@@ -279,10 +286,12 @@ def lookup_input_attribute(entity_graph, entity_name, attr_key):
         if join_def['name'] == input_alias
     ]
     assert len(input_joins) == 1
-    input_entity = input_joins[0].entity
+    input_join = input_joins[0]
+    input_entity = input_join.entity
 
-    assert attr_name in input_entity.attributes
-    return '{}.{}'.format(input_entity.name, attr_name)
+    input_key = '{}.{}'.format(input_entity.name, attr_name)
+    parent_key = '{}.{}'.format(entity_name, input_join.match_name)
+    return (input_key, parent_key)
 
 
 def build_attribute_graph(entity_graph):
@@ -294,8 +303,10 @@ def build_attribute_graph(entity_graph):
             attr_graph.add_node(key, attribute)
 
             for inp in attribute.inputs.values():
-                input_key = lookup_input_attribute(entity_graph, entity.name, inp)
+                input_key, parent_key = lookup_input_keys(entity_graph, entity.name, inp)
                 attr_graph.add_edge(input_key, key)
+                if parent_key != key:
+                    attr_graph.add_edge(parent_key, key)
 
     return attr_graph
 
