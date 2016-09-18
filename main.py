@@ -39,15 +39,15 @@ class Entity:
         attr_names = [attr_name for attr_name in self.attributes.keys()]
         return 'Entity({}, {})'.format(self.name, attr_names)
 
-
-class Source(Entity):
-    def __init__(self, path):
-        super().__init__(path, self._load_schema(path))
-
     def __getitem__(self, name):
         if name not in self.attributes:
             raise AttributeNotFound(self, name)
         return self.attributes[name]
+
+
+class Source(Entity):
+    def __init__(self, path):
+        super().__init__(path, self._load_schema(path))
 
     @staticmethod
     def _load_schema(path):
