@@ -1,3 +1,4 @@
+from copy import deepcopy
 from enum import Enum
 from functools import wraps
 import os
@@ -31,6 +32,8 @@ class Attribute:
 
 
 class Entity:
+    RELATIONSHIPS = {}
+
     def __init__(self, name, attr_defs):
         self.name = name
         self.attributes = {
@@ -143,7 +146,7 @@ raw_shops = Source('data/raw/shops')
 
 
 class Shops(Derived):
-    SOURCES = {
+    RELATIONSHIPS = {
         'shops': Join(raw_shops, 'id')
     }
 
@@ -171,7 +174,7 @@ class Shops(Derived):
 
 
 class Customers(Derived):
-    SOURCES = {
+    RELATIONSHIPS = {
         'customers': Join(raw_customers, 'id')
     }
 
@@ -187,7 +190,7 @@ class Customers(Derived):
 
 
 class Sales(Derived):
-    SOURCES = {
+    RELATIONSHIPS = {
         'orders': Join(raw_orders, 'id'),
         'transactions': Join(raw_transactions, 'order_id'),
         'shops': Join(Shops(), 'id', match_name='shop_id'),
@@ -224,8 +227,8 @@ shops = Shops()
 customers = Customers()
 sales = Sales()
 
-SOURCES = (raw_orders, raw_transactions, raw_customers, raw_shops)
-ENTITIES = (shops, customers, sales)
+ENTITIES = (raw_orders, raw_transactions, raw_customers, raw_shops,
+            shops, customers, sales)
 
 # --- ENGINE ---
 
@@ -251,9 +254,19 @@ class Graph:
                 if to_key == node_key:
                     yield (from_key, meta)
 
+    def out_edges(self, node_key):
+        for edge in self.edges[node_key]:
+            yield edge
+
+    def roots(self):
+        for node_key in self.nodes:
+            if not list(self.in_edges(node_key)):
+                yield node_key
+
     def dot(self):
         output = []
         output.append("digraph eavt {")
+        output += self._dot_nodes()
         for from_key, outs in self.edges.items():
             for to_key, _ in outs:
                 output.append("    \"{}\" -> \"{}\"".format(from_key, to_key))
@@ -269,16 +282,48 @@ class Graph:
         subprocess.check_call(['open', '{}.png'.format(path)])
         os.remove(path)
 
+    def _dot_nodes(self):
+        return ["    \"{}\"".format(n) for n in self.nodes]
 
-def build_entity_graph(sources, entities):
+
+class MarkedGraph(Graph):
+    @staticmethod
+    def from_graph(graph):
+        marked = MarkedGraph()
+        marked.nodes = deepcopy(graph.nodes)
+        marked.edges = deepcopy(graph.edges)
+        return marked
+
+    def __init__(self):
+        self.marked_nodes = set()
+        super().__init__()
+
+    def unmarked_roots(self):
+        to_mark = set()
+        for node_key in self.nodes.keys() - self.marked_nodes:
+            in_edges = self.in_edges(node_key)
+            if all(from_key in self.marked_nodes for from_key, _ in in_edges):
+                to_mark.add(node_key)
+
+        self.marked_nodes = self.marked_nodes.union(to_mark)
+        return to_mark
+
+    def _dot_nodes(self):
+        nodes = []
+        for n in self.nodes:
+            if n in self.marked_nodes:
+                nodes.append("    \"{}\" [fillcolor=\"red\" style=\"filled\"]".format(n))
+            else:
+                nodes.append("    \"{}\"".format(n))
+        return nodes
+
+
+def build_entity_graph(entities):
     graph = Graph()
-
-    for source in sources:
-        graph.add_node(source.name, source)
 
     for entity in entities:
         graph.add_node(entity.name, entity)
-        for join_name, join in entity.SOURCES.items():
+        for join_name, join in entity.RELATIONSHIPS.items():
             meta = {
                 'name': join_name,
                 'join': join,
@@ -322,5 +367,25 @@ def build_attribute_graph(entity_graph):
 
     return attr_graph
 
-entity_graph = build_entity_graph(SOURCES, ENTITIES)
+
+def validate_graph(attr_graph):
+    for attr_name in attr_graph.roots():
+        attr = attr_graph.nodes[attr_name]
+        assert isinstance(attr.entity, Source)
+
+
+def execution_order(attr_graph):
+    marked = MarkedGraph.from_graph(attr_graph)
+    order = []
+
+    unmarked_roots = marked.unmarked_roots()
+    while unmarked_roots:
+        order.append(unmarked_roots)
+        unmarked_roots = marked.unmarked_roots()
+
+    return order
+
+
+entity_graph = build_entity_graph(ENTITIES)
 attr_graph = build_attribute_graph(entity_graph)
+validate_graph(attr_graph)
